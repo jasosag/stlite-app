@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from datos import muestra_inicial
+from importar import normalizar
 from motor import CRUCES, DIAS_VENTANA, _filtra, aplicar_match_manual, conciliar
 
 st.set_page_config(
@@ -305,42 +306,76 @@ def pagina_manual() -> None:
 
 
 def pagina_importar() -> None:
-    st.title("Importar")
+    st.title("Importar Excel reales")
     st.write(
-        "Por ahora se cargan CSV o Excel. El siguiente paso será leer Odoo en vivo (facturas, pagos y gastos). "
-        "No subas archivos con datos reales a GitHub; solo aquí, en tu sesión."
+        "Usa un día o una semana, no el histórico completo. Cárgalos **aquí**, nunca a GitHub. "
+        "En Streamlit Cloud quien tenga el enlace podría ver la sesión: la primera prueba mejor en tu Mac con `./iniciar.sh`."
     )
-    destino = st.selectbox("Destino", ["Odoo", "Bancos", "Tarjetas", "Proveedores"])
+    destino = st.selectbox("Qué archivo es", ["Odoo", "Bancos", "Tarjetas", "Proveedores"])
     modulo = destino.lower()
-    st.code(", ".join(COLUMNAS[modulo]))
+    with st.expander("Columnas que entiende"):
+        if modulo == "bancos":
+            st.markdown(
+                "- Fecha, descripción\n"
+                "- **Cargo** y **Abono** (típico del banco) **o** Monto + Tipo\n"
+                "- Referencia y cuenta, si vienen"
+            )
+        elif modulo == "odoo":
+            st.markdown(
+                "- Fecha, Total/Monto, Empresa/Partner\n"
+                "- Tipo: venta, compra, gasto (también `out_invoice` / `in_invoice`)\n"
+                "- Folio y referencia si existen"
+            )
+        elif modulo == "tarjetas":
+            st.markdown("- Fecha, Monto, Comercio\n- Vendedor, tarjeta y autorización si los tienes")
+        else:
+            st.markdown("- Fecha, Proveedor, Monto\n- Folio y concepto del reporte")
+    reemplazar = st.checkbox(
+        f"Vaciar los datos de ejemplo de {destino} antes de cargar (recomendado)",
+        value=True,
+    )
     plantilla = pd.DataFrame(columns=COLUMNAS[modulo]).to_csv(index=False).encode("utf-8")
-    st.download_button("Descargar plantilla", data=plantilla, file_name=f"plantilla_{modulo}.csv", mime="text/csv")
-    archivo = st.file_uploader("Archivo", type=["csv", "xlsx"])
+    st.download_button(
+        "Descargar plantilla vacía",
+        data=plantilla,
+        file_name=f"plantilla_{modulo}.csv",
+        mime="text/csv",
+    )
+    archivo = st.file_uploader("Excel o CSV", type=["csv", "xlsx", "xls"])
     if archivo is None:
         st.markdown(
-            '<div class="empty">Descarga la plantilla, llénala (o exporta desde Odoo / el banco) y súbela.</div>',
+            '<div class="empty">Elige el destino, deja marcada la casilla de vaciar ejemplo, y sube ese archivo.</div>',
             unsafe_allow_html=True,
         )
+        if st.button("Restaurar solo datos de ejemplo"):
+            st.session_state.listas = muestra_inicial()
+            st.session_state.excepciones = []
+            st.session_state.corrida = False
+            st.success("Volviste al ejemplo.")
+            st.rerun()
         return
     try:
-        crudo = pd.read_excel(archivo) if archivo.name.lower().endswith(".xlsx") else pd.read_csv(archivo)
-        crudo.columns = [str(c).strip().lower() for c in crudo.columns]
-        faltan = [c for c in COLUMNAS[modulo] if c not in crudo.columns]
-        if faltan:
-            st.error(f"Faltan columnas: {', '.join(faltan)}")
-            return
-        crudo["monto"] = pd.to_numeric(crudo["monto"], errors="coerce")
-        crudo["fecha"] = pd.to_datetime(crudo["fecha"], errors="coerce")
-        if crudo["monto"].isna().any() or crudo["fecha"].isna().any():
-            st.error("Hay montos o fechas inválidas. Fechas en YYYY-MM-DD.")
-            return
-        crudo["fecha"] = crudo["fecha"].dt.strftime("%Y-%m-%d")
+        crudo = (
+            pd.read_excel(archivo)
+            if archivo.name.lower().endswith((".xlsx", ".xls"))
+            else pd.read_csv(archivo)
+        )
+        listo = normalizar(crudo, modulo)
     except Exception as exc:
         st.error(str(exc))
+        st.caption("Si falla por columnas, abre el Excel y dime los nombres de la fila 1.")
         return
-    st.dataframe(crudo[COLUMNAS[modulo]], use_container_width=True, hide_index=True)
-    if st.button(f"Cargar {len(crudo)} fila(s)", type="primary"):
-        for _, row in crudo.iterrows():
+    st.success(f"Leí {len(listo)} fila(s). Revisa la vista previa.")
+    st.dataframe(
+        listo,
+        use_container_width=True,
+        hide_index=True,
+        column_config={"monto": st.column_config.NumberColumn(format="$%.2f")},
+    )
+    if st.button(f"Cargar {len(listo)} fila(s) a {destino}", type="primary"):
+        if reemplazar:
+            st.session_state.listas[modulo] = []
+        for _, row in listo.iterrows():
             item = {
                 "id": f"{modulo[0]}-{uuid4().hex[:6]}",
                 "conciliado": False,
@@ -350,7 +385,7 @@ def pagina_importar() -> None:
                 item[col] = float(row[col]) if col == "monto" else str(row[col])
             st.session_state.listas[modulo].append(item)
         st.session_state.corrida = False
-        st.success("Cargado. Ejecuta la conciliación.")
+        st.success("Cargado. Ve a **Hoy** y pulsa Ejecutar conciliación.")
         st.rerun()
 
 
