@@ -391,6 +391,21 @@ def pagina_panel() -> None:
         unsafe_allow_html=True,
     )
 
+    with st.expander("Cómo desplegar esta app en tu Mac o en internet"):
+        st.markdown(
+            """
+En la Terminal de Cursor, dentro de la carpeta del proyecto, pega:
+
+```bash
+chmod +x iniciar.sh && ./iniciar.sh
+```
+
+Luego abre [http://localhost:8517](http://localhost:8517). Para apagarla: `Ctrl+C`.
+
+Para publicarla en internet: sube el proyecto a GitHub y crea la app en [share.streamlit.io](https://share.streamlit.io) eligiendo el archivo `app.py`.
+            """
+        )
+
     bloques = [
         ("Bancos", "bancos"),
         ("Tarjetas", "tarjetas"),
