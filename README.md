@@ -24,7 +24,13 @@ chmod +x iniciar.sh && ./iniciar.sh
 
 Eso instala lo que falte y levanta la interfaz. Déjala la terminal abierta mientras usas la app. Para apagarla: `Ctrl+C`.
 
-Si `./iniciar.sh` dice `command not found` o `python3` no existe:
+Si aparece el error de `ensurepip` / `python3-venv` (Ubuntu o este entorno Linux), el script ya no se detiene: borra el `.venv` a medias y usa el Python del sistema. Para que el entorno virtual sí funcione en Ubuntu:
+
+```bash
+sudo apt install -y python3.12-venv
+```
+
+Si en Mac no existe `python3`:
 
 ```bash
 brew install python
