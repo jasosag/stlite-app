@@ -34,10 +34,10 @@ MENU = [
 ]
 
 COLUMNAS = {
-    "odoo": ["fecha", "tipo", "folio", "partner", "referencia", "diario", "monto"],
-    "bancos": ["fecha", "cuenta", "referencia", "descripcion", "tipo", "monto"],
-    "tarjetas": ["fecha", "vendedor", "tarjeta", "comercio", "autorizacion", "monto"],
-    "proveedores": ["fecha", "proveedor", "folio", "concepto", "monto"],
+    "odoo": ["fecha", "tipo", "folio", "codigo", "partner", "referencia", "diario", "monto"],
+    "bancos": ["fecha", "cuenta", "codigo", "referencia", "descripcion", "tipo", "monto"],
+    "tarjetas": ["fecha", "vendedor", "tarjeta", "comercio", "autorizacion", "codigo", "monto"],
+    "proveedores": ["fecha", "proveedor", "folio", "codigo", "concepto", "monto"],
 }
 
 
@@ -190,8 +190,8 @@ def pagina_hoy() -> None:
             )
 
     st.caption(
-        f"Empate automático: mismo monto (±$0.01) y hasta {DIAS_VENTANA} días de diferencia, "
-        "priorizando que coincida el nombre del cliente, hotel o proveedor. "
+        f"Empate automático: primero el **código Odoo** que copian en los Excel; "
+        f"si no hay código, mismo monto (±$0.01) y hasta {DIAS_VENTANA} días. "
         "Todavía no se crea ni se corrige nada dentro de Odoo: eso será el siguiente paso (API)."
     )
 
@@ -233,6 +233,7 @@ def formulario_alta(modulo: str) -> None:
         if modulo == "odoo":
             extra["tipo"] = c3.selectbox("Tipo Odoo", ["venta", "compra", "gasto"])
             extra["folio"] = st.text_input("Folio / asiento")
+            extra["codigo"] = st.text_input("Código Odoo", help="El mismo que pondrán en banco, tarjeta o proveedor.")
             extra["partner"] = st.text_input("Contacto (cliente o proveedor)")
             extra["referencia"] = st.text_input("Referencia / concepto")
             extra["diario"] = st.text_input("Diario", value="Manual")
@@ -241,20 +242,23 @@ def formulario_alta(modulo: str) -> None:
             extra["tipo"] = st.selectbox("Tipo", ["abono", "cargo"])
             extra["referencia"] = st.text_input("Referencia bancaria")
             extra["descripcion"] = st.text_input("Descripción")
+            extra["codigo"] = st.text_input("Código Odoo")
         elif modulo == "tarjetas":
             extra["vendedor"] = c3.text_input("Vendedor")
             extra["tarjeta"] = st.text_input("Tarjeta")
             extra["comercio"] = st.text_input("Comercio")
             extra["autorizacion"] = st.text_input("Autorización")
+            extra["codigo"] = st.text_input("Código Odoo")
         else:
             extra["proveedor"] = c3.text_input("Proveedor")
             extra["folio"] = st.text_input("Folio del proveedor")
+            extra["codigo"] = st.text_input("Código Odoo")
             extra["concepto"] = st.text_input("Concepto")
         guardar = st.form_submit_button("Guardar")
 
     if not guardar:
         return
-    opcionales = {"referencia", "autorizacion"}
+    opcionales = {"referencia", "autorizacion", "codigo"}
     faltan = [
         k
         for k, v in extra.items()
@@ -271,6 +275,8 @@ def formulario_alta(modulo: str) -> None:
         "match_id": None,
         **{k: (v.strip() if isinstance(v, str) else v) for k, v in extra.items()},
     }
+    if modulo == "odoo" and not item.get("codigo"):
+        item["codigo"] = item.get("folio", "")
     st.session_state.listas[modulo].append(item)
     st.session_state.corrida = False
     st.success("Guardado. Vuelve a ejecutar la conciliación.")
@@ -296,7 +302,7 @@ def pagina_manual() -> None:
     b = c2.selectbox(
         "Odoo",
         odoo,
-        format_func=lambda r: f"{r['folio']} · {r['partner']} · ${r['monto']:,.2f}",
+        format_func=lambda r: f"{r.get('codigo') or r['folio']} · {r['partner']} · ${r['monto']:,.2f}",
     )
     if st.button("Marcar como conciliados", type="primary"):
         aplicar_match_manual(a, b)
@@ -318,18 +324,24 @@ def pagina_importar() -> None:
             st.markdown(
                 "- Fecha, descripción\n"
                 "- **Cargo** y **Abono** (típico del banco) **o** Monto + Tipo\n"
-                "- Referencia y cuenta, si vienen"
+                "- **Código Odoo** (el que capturan a mano) y referencia/cuenta si vienen"
             )
         elif modulo == "odoo":
             st.markdown(
                 "- Fecha, Total/Monto, Empresa/Partner\n"
                 "- Tipo: venta, compra, gasto (también `out_invoice` / `in_invoice`)\n"
-                "- Folio y referencia si existen"
+                "- Folio y **código Odoo** (el mismo que copian en banco, tarjeta y proveedor)"
             )
         elif modulo == "tarjetas":
-            st.markdown("- Fecha, Monto, Comercio\n- Vendedor, tarjeta y autorización si los tienes")
+            st.markdown(
+                "- Fecha, Monto, Comercio\n"
+                "- **Código Odoo**, vendedor, tarjeta y autorización si los tienes"
+            )
         else:
-            st.markdown("- Fecha, Proveedor, Monto\n- Folio y concepto del reporte")
+            st.markdown(
+                "- Fecha, Proveedor, Monto\n"
+                "- **Código Odoo**, folio y concepto del reporte"
+            )
     reemplazar = st.checkbox(
         f"Vaciar los datos de ejemplo de {destino} antes de cargar (recomendado)",
         value=True,

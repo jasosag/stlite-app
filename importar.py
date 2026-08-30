@@ -31,7 +31,18 @@ ALIASES = {
         "amount_total_signed",
     ],
     "tipo": ["tipo", "type", "move_type", "move type", "invoice type", "tipo de movimiento", "tipo de documento"],
-    "folio": ["folio", "number", "name", "numero", "número", "factura", "asiento", "document", "invoice/bill number"],
+    "codigo": [
+        "codigo",
+        "código",
+        "codigo odoo",
+        "código odoo",
+        "clave",
+        "key",
+        "id odoo",
+        "odoo",
+        "codigo conciliacion",
+        "código conciliación",
+    ],
     "partner": ["partner", "cliente", "proveedor", "empresa", "contacto", "contact", "partner_id"],
     "referencia": ["referencia", "ref", "concepto", "communication", "payment_reference", "memo"],
     "diario": ["diario", "journal", "journal_id"],
@@ -168,6 +179,7 @@ def normalizar(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
                 "cuenta": _serie(df, "cuenta", "cuenta 1"),
                 "referencia": _serie(df, "referencia_banco"),
                 "descripcion": _serie(df, "descripcion"),
+                "codigo": _serie(df, "codigo"),
                 "tipo": ta["tipo"],
                 "monto": ta["monto"],
             }
@@ -183,6 +195,7 @@ def normalizar(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
                 "fecha": fechas,
                 "tipo": _serie(df, "tipo", "compra").map(_tipo_odoo),
                 "folio": _serie(df, "folio", "S/F"),
+                "codigo": _serie(df, "codigo"),
                 "partner": _serie(df, "partner"),
                 "referencia": _serie(df, "referencia"),
                 "diario": _serie(df, "diario", "Odoo"),
@@ -193,6 +206,7 @@ def normalizar(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
             raise ValueError("Hay filas de Odoo sin cliente/proveedor (partner).")
         if montos.isna().any():
             raise ValueError("Hay montos de Odoo que no son numéricos.")
+        out["codigo"] = out["codigo"].where(out["codigo"].str.len() > 0, out["folio"])
     elif modulo == "tarjetas":
         col_m = _col(df, "monto")
         if col_m is None:
@@ -204,6 +218,7 @@ def normalizar(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
                 "tarjeta": _serie(df, "tarjeta", "Tarjeta"),
                 "comercio": _serie(df, "comercio"),
                 "autorizacion": _serie(df, "autorizacion"),
+                "codigo": _serie(df, "codigo"),
                 "monto": pd.to_numeric(df[col_m], errors="coerce").abs(),
             }
         )
@@ -220,6 +235,7 @@ def normalizar(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
                 "fecha": fechas,
                 "proveedor": _serie(df, "proveedor"),
                 "folio": _serie(df, "folio", "S/F"),
+                "codigo": _serie(df, "codigo"),
                 "concepto": _serie(df, "concepto"),
                 "monto": pd.to_numeric(df[col_m], errors="coerce").abs(),
             }

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 TOLERANCIA = 0.01
 DIAS_VENTANA = 5
+DIAS_VENTANA_CODIGO = 90
 
 CRUCES = {
     "Bancos abonos ↔ Odoo ventas": ("bancos", "odoo", {"tipo_banco": "abono", "tipo_odoo": "venta"}),
@@ -34,16 +35,19 @@ def _dias(a: dict, b: dict) -> int:
 
 
 def _etiqueta_odoo(row: dict) -> str:
-    return f"{row['folio']} · {row['tipo']} · {row['partner']} · ${row['monto']:,.2f}"
+    clave = row.get("codigo") or row.get("folio")
+    return f"{clave} · {row['tipo']} · {row['partner']} · ${row['monto']:,.2f}"
 
 
 def _etiqueta_ext(row: dict, modulo: str) -> str:
     monto = f"${row['monto']:,.2f}"
+    clave = row.get("codigo") or ""
+    pref = f"{clave} · " if clave else ""
     if modulo == "bancos":
-        return f"{row['tipo']} {monto} · {row['descripcion']}"
+        return f"{pref}{row['tipo']} {monto} · {row['descripcion']}"
     if modulo == "tarjetas":
-        return f"{row['vendedor']} · {row['comercio']} · {monto}"
-    return f"{row['proveedor']} · {row['folio']} · {monto}"
+        return f"{pref}{row['vendedor']} · {row['comercio']} · {monto}"
+    return f"{pref}{row['proveedor']} · {row['folio']} · {monto}"
 
 
 def _filtra(rows: list[dict], modulo: str, reglas: dict) -> list[dict]:
@@ -58,13 +62,41 @@ def _filtra(rows: list[dict], modulo: str, reglas: dict) -> list[dict]:
     return out
 
 
+def _codigo(row: dict) -> str:
+    bruto = str(row.get("codigo") or "").strip()
+    if bruto and bruto.lower() not in {"nan", "none", "s/f"}:
+        return _norm(bruto).replace(" ", "")
+    return ""
+
+
+def _codigo_odoo(row: dict) -> str:
+    return _codigo(row) or _norm(str(row.get("folio") or "")).replace(" ", "")
+
+
+def _misma_clave(ext: dict, odoo: dict) -> bool:
+    """True si el código Odoo está en el movimiento externo (columna o texto)."""
+    co = _codigo_odoo(odoo)
+    if not co or len(co) < 3:
+        return False
+    ce = _codigo(ext)
+    if ce and ce == co:
+        return True
+    blob = _norm(
+        " ".join(
+            str(ext.get(k, ""))
+            for k in ("codigo", "referencia", "descripcion", "concepto", "folio", "autorizacion")
+        )
+    ).replace(" ", "")
+    return co in blob
+
+
 def _pareja_texto(ext: dict, odoo: dict, modulo: str) -> float:
     """0 = nada en común, 1 = mismo partner/comercio en el texto."""
     blob_ext = " ".join(
         str(ext.get(k, ""))
-        for k in ("descripcion", "comercio", "proveedor", "partner", "referencia", "concepto")
+        for k in ("descripcion", "comercio", "proveedor", "partner", "referencia", "concepto", "codigo")
     )
-    blob_odoo = f"{odoo.get('partner', '')} {odoo.get('referencia', '')}"
+    blob_odoo = f"{odoo.get('partner', '')} {odoo.get('referencia', '')} {odoo.get('codigo', '')} {odoo.get('folio', '')}"
     ne, no = _norm(blob_ext), _norm(blob_odoo)
     if not ne or not no:
         return 0.0
@@ -81,7 +113,8 @@ def detectar_duplicados(rows: list[dict], modulo: str) -> list[dict]:
         clave = (
             row.get("fecha"),
             round(float(row["monto"]), 2),
-            _norm(str(row.get("autorizacion") or row.get("referencia") or row.get("folio") or "")),
+            _codigo(row)
+            or _norm(str(row.get("autorizacion") or row.get("referencia") or row.get("folio") or "")),
         )
         vistos.setdefault(clave, []).append(row)
     hallazgos = []
@@ -114,6 +147,14 @@ def _sugerir_cruce(ext: list[dict], odoo: list[dict], modulo: str) -> list[tuple
             continue
         for o in odoo:
             dias = _dias(e, o)
+            clave = _misma_clave(e, o)
+            if clave:
+                if dias > DIAS_VENTANA_CODIGO:
+                    continue
+                igual = _monto_igual(e["monto"], o["monto"])
+                score = 20.0 + (2.0 if igual else 0.0) - dias * 0.01
+                candidatos.append((score, dias, e, o))
+                continue
             if dias > DIAS_VENTANA:
                 continue
             igual = _monto_igual(e["monto"], o["monto"])
@@ -183,10 +224,11 @@ def conciliar(listas: dict) -> dict:
                         "fecha": e["fecha"],
                         "monto": diff,
                         "detalle": (
+                            f"código {e.get('codigo') or o.get('codigo') or o.get('folio')} · "
                             f"{_etiqueta_ext(e, mod_ext)}  ↔  {_etiqueta_odoo(o)} "
                             f"(separados {dias} día(s), diferencia ${diff:,.2f})"
                         ),
-                        "accion": "Revisar comisión, descuento o error de captura en Odoo.",
+                        "accion": "Mismo código Odoo, distinto monto. Revisar comisión, descuento o captura.",
                         "ids": [e["id"], o["id"]],
                     }
                 )
