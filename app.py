@@ -6,7 +6,6 @@ Punto de entrada del sistema. Datos en memoria (se reinician al recargar).
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from io import BytesIO
 from uuid import uuid4
 
 import pandas as pd

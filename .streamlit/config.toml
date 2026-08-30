@@ -1,9 +1,5 @@
-[server]
-headless = true
-port = 8517
-address = "0.0.0.0"
-enableCORS = false
-enableXsrfProtection = true
+# En Streamlit Cloud no se fija el puerto: la plataforma elige el suyo.
+# En tu Mac, iniciar.sh sigue usando --server.port 8517.
 
 [browser]
 gatherUsageStats = false
