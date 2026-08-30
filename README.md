@@ -40,15 +40,34 @@ Luego vuelve a pegar `./iniciar.sh`.
 
 ### B. En internet (gratis, con Streamlit Cloud)
 
-Así otras personas abren la app con un enlace, sin instalar Python.
+Streamlit Cloud **solo lee GitHub**. En el plan gratis el repositorio tiene que ser **Public**. Eso es lo que pide la pantalla “deploy a public app”.
 
-1. Sube este proyecto a **GitHub** (en Cursor: Create repo, o `git push` a un repositorio tuyo).
-2. Entra a [https://share.streamlit.io](https://share.streamlit.io) e inicia sesión con GitHub.
-3. Pulsa **Create app**.
-4. Elige tu repositorio, la rama `main` y el archivo **`app.py`**.
-5. Pulsa **Deploy**. En uno o dos minutos te da una URL tipo `https://tu-app.streamlit.app`.
+**1. Pon el código en GitHub (público)**
 
-Streamlit Cloud lee `requirements.txt` solo. No uses `iniciar.sh` ahí: ese script es solo para tu Mac.
+Este proyecto todavía no está en GitHub. En Cursor, pulsa **Create repo**, elige visibilidad **Public** y un nombre (por ejemplo `conciliacion-financiera`). No lo dejes en Private: Streamlit gratis no lo va a listar.
+
+No subas estados de cuenta ni Excel reales. El código puede ser público; los datos de tu empresa, no.
+
+**2. Autoriza Streamlit**
+
+1. Entra a [https://share.streamlit.io](https://share.streamlit.io).
+2. **Sign in with GitHub** → **Authorize streamlit**.
+3. Si pide acceso a repos, con **public repositories** basta. No hace falta dar permiso a los privados.
+
+**3. Crea la app**
+
+1. **Create app** (o **New app**).
+2. Rellena exactamente esto:
+   - **Repository:** el repo público que acabas de crear
+   - **Branch:** `main`
+   - **Main file path:** `app.py`
+3. **Deploy**.
+
+En uno o dos minutos te da una URL tipo `https://lo-que-elijas.streamlit.app`. Esa sí la puedes guardar en Favoritos de Safari.
+
+Si el repo no aparece en la lista: está en Private, o GitHub no está conectado. En GitHub → **Settings** → **General** → **Change repository visibility** → **Public**, recarga Streamlit.
+
+Streamlit Cloud instala lo de `requirements.txt`. No uses `iniciar.sh` ahí: ese script es solo para tu computadora.
 
 ---
 
