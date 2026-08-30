@@ -1,6 +1,26 @@
-# Conciliación financiera
+# Conciliación diaria contra Odoo (agencia de viajes)
 
-Software en Python + Streamlit para cruzar **Bancos**, **Tarjetas**, **Ventas** y **Proveedores**.
+Cruza **Odoo** (ventas, compras y gastos) con **bancos**, **tarjetas de cada vendedor** y **reportes de proveedores**. Detecta faltantes en Odoo, duplicados y diferencias de monto.
+
+Los datos de ejemplo viven en memoria. Aún no se conecta la API de Odoo ni se escribe de vuelta al ERP.
+
+## Cómo correrla
+
+```bash
+chmod +x iniciar.sh && ./iniciar.sh
+```
+
+Abre http://localhost:8517
+
+En Streamlit Cloud, tras cambiar código: `git push github main` y Reboot en la app.
+
+## Uso diario (prototipo)
+
+1. Importa (o usa el ejemplo) Odoo + bancos + tarjetas + proveedores.
+2. **Ejecutar conciliación**.
+3. En **Hoy**, atiende faltantes, duplicados y diferencias.
+
+No subas estados de cuenta reales a GitHub.
 
 ---
 
@@ -73,16 +93,15 @@ Streamlit Cloud instala lo de `requirements.txt`. No uses `iniciar.sh` ahí: ese
 
 ## Qué hace la app
 
-- **Panel** — totales y pendientes de los cuatro módulos
-- **Bancos / Tarjetas / Ventas / Proveedores** — consulta, alta manual y plantilla CSV
-- **Conciliar** — sugiere parejas con el mismo monto (ventana de 7 días) y permite cruce manual
-- **Importar** — carga CSV o Excel (`.xlsx`)
-
-Los datos de ejemplo viven en memoria: recargar la página los reinicia. Aún no hay base de datos.
+- **Hoy** — excepciones del día: falta en Odoo, duplicados, diferencia de monto
+- **Odoo / Bancos / Tarjetas / Proveedores** — cada fuente
+- **Conciliar a mano** — cuando el automático no empata
+- **Importar** — CSV o Excel (plantillas incluidas)
 
 ## Archivos
 
-- `iniciar.sh` — un solo comando para desplegarlo en tu Mac
-- `app.py` — interfaz y lógica de conciliación
-- `requirements.txt` — librerías (Streamlit, pandas, openpyxl)
-- `.streamlit/config.toml` — puerto 8517 y tema
+- `app.py` — interfaz
+- `motor.py` — reglas de cruce
+- `datos.py` — ejemplo de agencia de viajes
+- `iniciar.sh` — arranque en Mac
+- `requirements.txt` — librerías

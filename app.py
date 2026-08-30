@@ -1,48 +1,42 @@
 """
-Conciliación financiera — Bancos, Tarjetas, Ventas y Proveedores.
-Punto de entrada del sistema. Datos en memoria (se reinician al recargar).
+Conciliación diaria — agencia de viajes.
+Cruza Odoo (ventas, compras, gastos) con bancos, tarjetas de vendedores
+y reportes de proveedores. Datos en memoria hasta conectar la API de Odoo.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date
 from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
 
+from datos import muestra_inicial
+from motor import CRUCES, DIAS_VENTANA, _filtra, aplicar_match_manual, conciliar
+
 st.set_page_config(
-    page_title="Conciliación financiera",
+    page_title="Conciliación diaria · Agencia",
     page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 MENU = [
-    "Panel",
+    "Hoy",
+    "Odoo",
     "Bancos",
     "Tarjetas",
-    "Ventas",
     "Proveedores",
-    "Conciliar",
+    "Conciliar a mano",
     "Importar",
 ]
 
-TOLERANCIA = 0.01
-DIAS_VENTANA = 7
-
 COLUMNAS = {
+    "odoo": ["fecha", "tipo", "folio", "partner", "referencia", "diario", "monto"],
     "bancos": ["fecha", "cuenta", "referencia", "descripcion", "tipo", "monto"],
-    "tarjetas": ["fecha", "tarjeta", "comercio", "autorizacion", "monto"],
-    "ventas": ["fecha", "folio", "cliente", "forma_pago", "monto"],
-    "proveedores": ["fecha", "folio", "proveedor", "concepto", "monto"],
-}
-
-TIPOS_CONCILIACION = {
-    "Ventas ↔ Bancos (abonos)": ("ventas", "bancos", "abono"),
-    "Ventas ↔ Tarjetas": ("ventas", "tarjetas", None),
-    "Proveedores ↔ Bancos (cargos)": ("proveedores", "bancos", "cargo"),
-    "Proveedores ↔ Tarjetas": ("proveedores", "tarjetas", None),
+    "tarjetas": ["fecha", "vendedor", "tarjeta", "comercio", "autorizacion", "monto"],
+    "proveedores": ["fecha", "proveedor", "folio", "concepto", "monto"],
 }
 
 
@@ -54,182 +48,35 @@ def hoy() -> date:
     return date.today()
 
 
-def muestra_inicial() -> dict:
-    """Datos de ejemplo para que la interfaz se vea llena desde el primer clic."""
-    d = hoy()
-    return {
-        "bancos": [
-            {
-                "id": "b1",
-                "fecha": (d - timedelta(days=9)).isoformat(),
-                "cuenta": "BBVA ****4521",
-                "referencia": "SPEI-88921",
-                "descripcion": "SPEI in Agencia Norte",
-                "tipo": "abono",
-                "monto": 24500.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "b2",
-                "fecha": (d - timedelta(days=7)).isoformat(),
-                "cuenta": "BBVA ****4521",
-                "referencia": "PAGO-4410",
-                "descripcion": "Pago Hotel Palmas",
-                "tipo": "cargo",
-                "monto": 9800.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "b3",
-                "fecha": (d - timedelta(days=4)).isoformat(),
-                "cuenta": "BBVA ****4521",
-                "referencia": "SPEI-89002",
-                "descripcion": "SPEI in Tour escuela",
-                "tipo": "abono",
-                "monto": 15700.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "b4",
-                "fecha": (d - timedelta(days=12)).isoformat(),
-                "cuenta": "BBVA ****4521",
-                "referencia": "COM-12",
-                "descripcion": "Comisión SPEI",
-                "tipo": "cargo",
-                "monto": 85.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-        ],
-        "tarjetas": [
-            {
-                "id": "t1",
-                "fecha": (d - timedelta(days=8)).isoformat(),
-                "tarjeta": "Visa ****8891",
-                "comercio": "POS sucursal — Cliente López",
-                "autorizacion": "A88321",
-                "monto": 8320.50,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "t2",
-                "fecha": (d - timedelta(days=6)).isoformat(),
-                "tarjeta": "Visa ****8891",
-                "comercio": "Aerolínea MX",
-                "autorizacion": "A88402",
-                "monto": 4100.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "t3",
-                "fecha": (d - timedelta(days=2)).isoformat(),
-                "tarjeta": "AMEX ****2204",
-                "comercio": "Combustible corporativo",
-                "autorizacion": "A89011",
-                "monto": 1260.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-        ],
-        "ventas": [
-            {
-                "id": "v1",
-                "fecha": (d - timedelta(days=10)).isoformat(),
-                "folio": "V-1001",
-                "cliente": "Agencia Norte",
-                "forma_pago": "Transferencia",
-                "monto": 24500.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "v2",
-                "fecha": (d - timedelta(days=8)).isoformat(),
-                "folio": "V-1002",
-                "cliente": "Cliente López",
-                "forma_pago": "Tarjeta",
-                "monto": 8320.50,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "v3",
-                "fecha": (d - timedelta(days=5)).isoformat(),
-                "folio": "V-1003",
-                "cliente": "Tour escuela",
-                "forma_pago": "Transferencia",
-                "monto": 15800.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-        ],
-        "proveedores": [
-            {
-                "id": "p1",
-                "fecha": (d - timedelta(days=8)).isoformat(),
-                "folio": "P-501",
-                "proveedor": "Hotel Palmas",
-                "concepto": "Hospedaje grupo",
-                "monto": 9800.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "p2",
-                "fecha": (d - timedelta(days=6)).isoformat(),
-                "folio": "P-502",
-                "proveedor": "Aerolínea MX",
-                "concepto": "Boletos",
-                "monto": 4100.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-            {
-                "id": "p3",
-                "fecha": (d - timedelta(days=3)).isoformat(),
-                "folio": "P-503",
-                "proveedor": "Transportes Sur",
-                "concepto": "Traslados",
-                "monto": 3200.00,
-                "conciliado": False,
-                "match_id": None,
-            },
-        ],
-    }
-
-
 def init_state() -> None:
     if "listas" not in st.session_state:
         st.session_state.listas = muestra_inicial()
-    if "nombre" not in st.session_state:
-        st.session_state.nombre = "Conciliación financiera"
+    if "excepciones" not in st.session_state:
+        st.session_state.excepciones = []
+    if "corrida" not in st.session_state:
+        st.session_state.corrida = False
+    if "dia" not in st.session_state:
+        st.session_state.dia = hoy()
 
 
 def estilos() -> None:
     st.markdown(
         """
         <style>
-          .block-container { padding-top: 1.5rem; padding-bottom: 3rem; max-width: 1400px; }
+          .block-container { padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1440px; }
           [data-testid="stSidebar"] { background: #0b1220; }
           [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
-          [data-testid="stMetricValue"] { font-size: 1.55rem; }
+          [data-testid="stMetricValue"] { font-size: 1.45rem; }
           .hero {
-            background: linear-gradient(135deg, #0f766e 0%, #115e59 55%, #0f172a 100%);
-            color: #f8fafc; padding: 1.35rem 1.55rem; border-radius: 16px; margin-bottom: 1.1rem;
+            background: linear-gradient(135deg, #0f766e 0%, #115e59 50%, #0f172a 100%);
+            color: #f8fafc; padding: 1.3rem 1.5rem; border-radius: 16px; margin-bottom: 1rem;
           }
-          .hero h1 { margin: 0 0 0.3rem 0; font-size: 1.65rem; color: #fff; letter-spacing: -0.02em; }
+          .hero h1 { margin: 0 0 0.35rem 0; font-size: 1.55rem; color: #fff; }
           .hero p { margin: 0; opacity: 0.92; }
           .empty {
-            border: 1px dashed #cbd5e1; border-radius: 12px; padding: 1.8rem 1.4rem;
+            border: 1px dashed #cbd5e1; border-radius: 12px; padding: 1.6rem 1.3rem;
             text-align: center; color: #64748b; background: #fff;
           }
-          .match-ok { background: #ecfdf5; border: 1px solid #99f6e4; border-radius: 10px; padding: 0.7rem 0.9rem; }
-          .match-warn { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 10px; padding: 0.7rem 0.9rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -240,272 +87,181 @@ def filas(modulo: str) -> list[dict]:
     return st.session_state.listas[modulo]
 
 
-def df_modulo(modulo: str) -> pd.DataFrame:
+def df_vista(modulo: str) -> pd.DataFrame:
     rows = filas(modulo)
     if not rows:
-        cols = COLUMNAS[modulo] + ["estado"]
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=COLUMNAS[modulo] + ["estado"])
     frame = pd.DataFrame(rows)
-    frame["estado"] = frame["conciliado"].map(lambda x: "Conciliado" if x else "Pendiente")
-    return frame
+    frame["estado"] = [
+        "Conciliado" if r.get("conciliado") else ("Revisar" if r.get("alerta") else "Pendiente")
+        for r in rows
+    ]
+    return frame[COLUMNAS[modulo] + ["estado"]]
 
 
-def suma(modulo: str, conciliado: bool | None = None) -> float:
-    total = 0.0
-    for row in filas(modulo):
-        if conciliado is None or row["conciliado"] is conciliado:
-            total += float(row["monto"])
-    return total
-
-
-def pendiente_count(modulo: str) -> int:
-    return sum(1 for row in filas(modulo) if not row["conciliado"])
-
-
-def etiqueta(row: dict, modulo: str) -> str:
-    fecha = row["fecha"]
-    monto = dinero(row["monto"])
-    estado = "✓" if row["conciliado"] else "○"
-    if modulo == "bancos":
-        return f"{estado} {fecha} · {row['tipo']} {monto} · {row['descripcion']}"
-    if modulo == "tarjetas":
-        return f"{estado} {fecha} · {monto} · {row['comercio']}"
-    if modulo == "ventas":
-        return f"{estado} {fecha} · {row['folio']} · {row['cliente']} · {monto}"
-    return f"{estado} {fecha} · {row['folio']} · {row['proveedor']} · {monto}"
-
-
-def plantilla_csv(modulo: str) -> bytes:
-    return pd.DataFrame(columns=COLUMNAS[modulo]).to_csv(index=False).encode("utf-8")
-
-
-def aplicar_match(a: dict, b: dict) -> None:
-    match_id = str(uuid4())[:8]
-    a["conciliado"] = True
-    b["conciliado"] = True
-    a["match_id"] = match_id
-    b["match_id"] = match_id
-
-
-def deshacer_match(match_id: str) -> None:
-    for lista in st.session_state.listas.values():
-        for row in lista:
-            if row.get("match_id") == match_id:
-                row["conciliado"] = False
-                row["match_id"] = None
-
-
-def filtrar_banco(rows: list[dict], tipo: str | None) -> list[dict]:
-    if not tipo:
-        return rows
-    return [r for r in rows if r.get("tipo") == tipo]
-
-
-def candidatos_auto(izq: list[dict], der: list[dict]) -> list[tuple[dict, dict, int]]:
-    usados_der: set[str] = set()
-    pares: list[tuple[dict, dict, int]] = []
-    for a in izq:
-        if a["conciliado"]:
-            continue
-        mejor = None
-        mejor_dias = 99
-        for b in der:
-            if b["conciliado"] or b["id"] in usados_der:
-                continue
-            if abs(float(a["monto"]) - float(b["monto"])) > TOLERANCIA:
-                continue
-            delta = abs(
-                (datetime.fromisoformat(a["fecha"]) - datetime.fromisoformat(b["fecha"])).days
-            )
-            if delta <= DIAS_VENTANA and delta < mejor_dias:
-                mejor = b
-                mejor_dias = delta
-        if mejor:
-            usados_der.add(mejor["id"])
-            pares.append((a, mejor, mejor_dias))
-    return pares
-
-
-def leer_archivo(uploaded) -> pd.DataFrame:
-    nombre = uploaded.name.lower()
-    if nombre.endswith(".xlsx"):
-        return pd.read_excel(uploaded)
-    return pd.read_csv(uploaded)
-
-
-def normalizar_import(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    faltan = [c for c in COLUMNAS[modulo] if c not in df.columns]
-    if faltan:
-        raise ValueError(f"Faltan columnas: {', '.join(faltan)}")
-    out = df[COLUMNAS[modulo]].copy()
-    out["monto"] = pd.to_numeric(out["monto"], errors="coerce")
-    if out["monto"].isna().any():
-        raise ValueError("Hay montos que no son numéricos.")
-    out["fecha"] = pd.to_datetime(out["fecha"], errors="coerce")
-    if out["fecha"].isna().any():
-        raise ValueError("Hay fechas inválidas. Usa YYYY-MM-DD.")
-    out["fecha"] = out["fecha"].dt.strftime("%Y-%m-%d")
-    if modulo == "bancos":
-        out["tipo"] = out["tipo"].astype(str).str.lower().str.strip()
-        if not out["tipo"].isin(["cargo", "abono"]).all():
-            raise ValueError("En Bancos, tipo debe ser cargo o abono.")
-    return out
-
-
-def filas_desde_df(df: pd.DataFrame, modulo: str) -> list[dict]:
-    nuevas = []
-    prefijo = modulo[0]
-    for _, row in df.iterrows():
-        item = {"id": f"{prefijo}-{uuid4().hex[:6]}", "conciliado": False, "match_id": None}
-        for col in COLUMNAS[modulo]:
-            valor = row[col]
-            item[col] = float(valor) if col == "monto" else str(valor)
-        nuevas.append(item)
-    return nuevas
+def correr_conciliacion() -> None:
+    resultado = conciliar(st.session_state.listas)
+    st.session_state.excepciones = resultado["excepciones"]
+    st.session_state.corrida = True
 
 
 def sidebar() -> str:
     with st.sidebar:
-        st.markdown(f"### ◈ {st.session_state.nombre}")
-        st.caption("Bancos · Tarjetas · Ventas · Proveedores")
+        st.markdown("### ◈ Conciliación diaria")
+        st.caption("Odoo · Bancos · Tarjetas · Proveedores")
         st.divider()
         seccion = st.radio("Navegación", MENU, label_visibility="collapsed")
         st.divider()
-        pendientes = sum(pendiente_count(m) for m in COLUMNAS)
-        st.metric("Pendientes", pendientes)
-        st.caption("Los datos viven en esta sesión. Recargar la página los reinicia.")
+        n_ex = len(st.session_state.excepciones)
+        st.metric("Excepciones", n_ex if st.session_state.corrida else "—")
+        if st.button("Ejecutar conciliación", type="primary", use_container_width=True):
+            correr_conciliacion()
+            st.rerun()
+        st.caption("Los datos de ejemplo se reinician al recargar. Aún no escribimos en Odoo.")
     return seccion
 
 
-def pagina_panel() -> None:
+def pagina_hoy() -> None:
     st.markdown(
-        f"""
+        """
         <div class="hero">
-          <h1>{st.session_state.nombre}</h1>
-          <p>Cruza movimientos de banco y tarjeta con ventas y facturas de proveedores. Empieza en Conciliar o carga tus CSV en Importar.</p>
+          <h1>Revisión diaria contra Odoo</h1>
+          <p>Los estados de cuenta (bancos, tarjetas de cada vendedor y reportes de proveedores)
+          se cruzan con ventas, compras y gastos de Odoo. Lo que no empató aparece abajo para corregirlo.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    st.session_state.dia = st.date_input("Día a revisar", value=st.session_state.dia)
+    dia = st.session_state.dia.isoformat()
 
-    with st.expander("Cómo desplegar esta app en tu Mac o en internet"):
-        st.markdown(
-            """
-En la Terminal de Cursor, dentro de la carpeta del proyecto, pega:
+    if not st.session_state.corrida:
+        st.info("Pulsa **Ejecutar conciliación** en el menú. Con los datos de ejemplo verás faltantes, un duplicado de tarjeta y una diferencia de $100.")
+        return
 
-```bash
-chmod +x iniciar.sh && ./iniciar.sh
-```
+    ex = st.session_state.excepciones
+    del_dia = [e for e in ex if e["fecha"] == dia]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Excepciones del día", len(del_dia))
+    c2.metric("Faltan en Odoo", sum(1 for e in del_dia if e["tipo"] == "Falta en Odoo"))
+    c3.metric("Duplicados", sum(1 for e in del_dia if e["tipo"] == "Duplicado"))
+    c4.metric("Diferencias", sum(1 for e in del_dia if e["tipo"] == "Diferencia de monto"))
 
-Luego abre [http://localhost:8517](http://localhost:8517). Para apagarla: `Ctrl+C`.
+    st.subheader("Qué hay que atender hoy")
+    if not del_dia:
+        st.success("No hay excepciones en esta fecha. Cambia el día o importa archivos nuevos.")
+        return
 
-Para publicarla en internet: sube el proyecto a GitHub y crea la app en [share.streamlit.io](https://share.streamlit.io) eligiendo el archivo `app.py`.
-            """
-        )
-
-    bloques = [
-        ("Bancos", "bancos"),
-        ("Tarjetas", "tarjetas"),
-        ("Ventas", "ventas"),
-        ("Proveedores", "proveedores"),
-    ]
-    cols = st.columns(4)
-    for col, (titulo, modulo) in zip(cols, bloques):
-        total = suma(modulo)
-        pend = suma(modulo, False)
-        n_pend = pendiente_count(modulo)
-        col.metric(titulo, dinero(total), f"{n_pend} pendientes · {dinero(pend)}")
-
-    st.subheader("Qué falta por conciliar")
-    resumen = pd.DataFrame(
+    tabla = pd.DataFrame(
         [
             {
-                "Módulo": titulo,
-                "Movimientos": len(filas(modulo)),
-                "Pendientes": pendiente_count(modulo),
-                "Monto pendiente": suma(modulo, False),
-                "Monto conciliado": suma(modulo, True),
+                "Tipo": e["tipo"],
+                "Fuente": e["fuente"],
+                "Fecha": e["fecha"],
+                "Monto": e["monto"],
+                "Detalle": e["detalle"],
+                "Qué hacer": e["accion"],
             }
-            for titulo, modulo in bloques
+            for e in del_dia
         ]
     )
     st.dataframe(
-        resumen,
+        tabla,
         use_container_width=True,
         hide_index=True,
-        column_config={
-            "Monto pendiente": st.column_config.NumberColumn(format="$%.2f"),
-            "Monto conciliado": st.column_config.NumberColumn(format="$%.2f"),
-        },
+        column_config={"Monto": st.column_config.NumberColumn(format="$%.2f")},
     )
 
-    st.info(
-        "Con los datos de ejemplo, **Conciliar → Sugerir coincidencias** debe empatar "
-        "V-1001 con el SPEI de Agencia Norte, V-1002 con el cargo POS, "
-        "Hotel Palmas con el cargo bancario y Aerolínea MX con la tarjeta."
+    with st.expander("Todas las excepciones (otros días)"):
+        otras = [e for e in ex if e["fecha"] != dia]
+        if not otras:
+            st.caption("No hay más.")
+        else:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"Tipo": e["tipo"], "Fecha": e["fecha"], "Detalle": e["detalle"]}
+                        for e in otras
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.caption(
+        f"Empate automático: mismo monto (±$0.01) y hasta {DIAS_VENTANA} días de diferencia, "
+        "priorizando que coincida el nombre del cliente, hotel o proveedor. "
+        "Todavía no se crea ni se corrige nada dentro de Odoo: eso será el siguiente paso (API)."
     )
 
 
-def tabla_modulo(modulo: str) -> None:
-    frame = df_modulo(modulo)
+def pagina_modulo(titulo: str, modulo: str, ayuda: str) -> None:
+    st.title(titulo)
+    st.write(ayuda)
+    frame = df_vista(modulo)
+    total = float(frame["monto"].sum()) if not frame.empty else 0.0
+    pend = frame[frame["estado"] != "Conciliado"] if not frame.empty else frame
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Movimientos", 0 if frame.empty else len(frame))
+    c2.metric("Monto", dinero(total))
+    c3.metric("Sin conciliar", 0 if pend.empty else len(pend))
     if frame.empty:
         st.markdown(
-            '<div class="empty">No hay movimientos. Cárgalos en <strong>Importar</strong> o agrégalos abajo.</div>',
+            '<div class="empty">Sin movimientos. Cárgalos en Importar o agrégalos abajo.</div>',
             unsafe_allow_html=True,
         )
-        return
-    visibles = COLUMNAS[modulo] + ["estado"]
-    filtro = st.selectbox("Estado", ["Todos", "Pendiente", "Conciliado"], key=f"filtro_{modulo}")
-    vista = frame[visibles]
-    if filtro != "Todos":
-        vista = vista[vista["estado"] == filtro]
-    if vista.empty:
-        st.info("Ningún movimiento con ese filtro.")
-        return
-    st.dataframe(
-        vista,
-        use_container_width=True,
-        hide_index=True,
-        column_config={"monto": st.column_config.NumberColumn(format="$%.2f")},
-    )
+    else:
+        filtro = st.selectbox("Estado", ["Todos", "Pendiente", "Conciliado", "Revisar"], key=f"f_{modulo}")
+        vista = frame if filtro == "Todos" else frame[frame["estado"] == filtro]
+        st.dataframe(
+            vista,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"monto": st.column_config.NumberColumn(format="$%.2f")},
+        )
+    formulario_alta(modulo)
 
 
 def formulario_alta(modulo: str) -> None:
-    st.subheader("Agregar movimiento")
+    st.subheader("Agregar a mano")
     with st.form(f"alta_{modulo}", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
-        fecha = c1.date_input("Fecha", value=hoy(), key=f"f_{modulo}")
+        fecha = c1.date_input("Fecha", value=hoy(), key=f"fecha_{modulo}")
         monto = c2.number_input("Monto", min_value=0.01, step=0.01, format="%.2f")
         extra: dict = {}
-        if modulo == "bancos":
+        if modulo == "odoo":
+            extra["tipo"] = c3.selectbox("Tipo Odoo", ["venta", "compra", "gasto"])
+            extra["folio"] = st.text_input("Folio / asiento")
+            extra["partner"] = st.text_input("Contacto (cliente o proveedor)")
+            extra["referencia"] = st.text_input("Referencia / concepto")
+            extra["diario"] = st.text_input("Diario", value="Manual")
+        elif modulo == "bancos":
             extra["cuenta"] = c3.text_input("Cuenta", value="BBVA ****4521")
             extra["tipo"] = st.selectbox("Tipo", ["abono", "cargo"])
-            extra["referencia"] = st.text_input("Referencia")
+            extra["referencia"] = st.text_input("Referencia bancaria")
             extra["descripcion"] = st.text_input("Descripción")
         elif modulo == "tarjetas":
-            extra["tarjeta"] = c3.text_input("Tarjeta", value="Visa ****8891")
+            extra["vendedor"] = c3.text_input("Vendedor")
+            extra["tarjeta"] = st.text_input("Tarjeta")
             extra["comercio"] = st.text_input("Comercio")
             extra["autorizacion"] = st.text_input("Autorización")
-        elif modulo == "ventas":
-            extra["folio"] = c3.text_input("Folio")
-            extra["cliente"] = st.text_input("Cliente")
-            extra["forma_pago"] = st.selectbox("Forma de pago", ["Transferencia", "Tarjeta", "Efectivo"])
         else:
-            extra["folio"] = c3.text_input("Folio")
-            extra["proveedor"] = st.text_input("Proveedor")
+            extra["proveedor"] = c3.text_input("Proveedor")
+            extra["folio"] = st.text_input("Folio del proveedor")
             extra["concepto"] = st.text_input("Concepto")
-        guardar = st.form_submit_button("Guardar", type="primary")
+        guardar = st.form_submit_button("Guardar")
 
     if not guardar:
         return
-
-    obligatorios = [v for k, v in extra.items() if k not in {"referencia", "autorizacion"}]
-    if any(isinstance(v, str) and not v.strip() for v in obligatorios):
+    opcionales = {"referencia", "autorizacion"}
+    faltan = [
+        k
+        for k, v in extra.items()
+        if isinstance(v, str) and not v.strip() and k not in opcionales
+    ]
+    if faltan:
         st.error("Completa los campos obligatorios.")
         return
-
     item = {
         "id": f"{modulo[0]}-{uuid4().hex[:6]}",
         "fecha": fecha.isoformat(),
@@ -515,180 +271,86 @@ def formulario_alta(modulo: str) -> None:
         **{k: (v.strip() if isinstance(v, str) else v) for k, v in extra.items()},
     }
     st.session_state.listas[modulo].append(item)
-    st.success("Movimiento guardado.")
+    st.session_state.corrida = False
+    st.success("Guardado. Vuelve a ejecutar la conciliación.")
     st.rerun()
 
 
-def pagina_modulo(titulo: str, modulo: str, ayuda: str) -> None:
-    st.title(titulo)
-    st.write(ayuda)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total", dinero(suma(modulo)))
-    c2.metric("Pendiente", dinero(suma(modulo, False)))
-    c3.metric("Conciliado", dinero(suma(modulo, True)))
-    tabla_modulo(modulo)
-    st.download_button(
-        "Descargar plantilla CSV",
-        data=plantilla_csv(modulo),
-        file_name=f"plantilla_{modulo}.csv",
-        mime="text/csv",
-        key=f"dl_{modulo}",
-    )
-    formulario_alta(modulo)
-
-
-def pagina_conciliar() -> None:
-    st.title("Conciliar")
-    st.write(
-        "El sistema sugiere parejas con el **mismo monto** y fecha a no más de "
-        f"{DIAS_VENTANA} días. Tú confirmas o concilias a mano."
-    )
-
-    tipo = st.selectbox("Cruce", list(TIPOS_CONCILIACION.keys()))
-    mod_izq, mod_der, tipo_banco = TIPOS_CONCILIACION[tipo]
-    izq = filas(mod_izq)
-    der = filtrar_banco(filas(mod_der), tipo_banco)
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.subheader(mod_izq.capitalize())
-        pend_izq = [r for r in izq if not r["conciliado"]]
-        st.caption(f"{len(pend_izq)} pendientes")
-        if pend_izq:
-            st.dataframe(
-                pd.DataFrame(pend_izq)[COLUMNAS[mod_izq]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={"monto": st.column_config.NumberColumn(format="$%.2f")},
-            )
-        else:
-            st.success("Nada pendiente en este lado.")
-    with col_b:
-        st.subheader(mod_der.capitalize() + (f" · {tipo_banco}" if tipo_banco else ""))
-        pend_der = [r for r in der if not r["conciliado"]]
-        st.caption(f"{len(pend_der)} pendientes")
-        if pend_der:
-            st.dataframe(
-                pd.DataFrame(pend_der)[COLUMNAS[mod_der]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={"monto": st.column_config.NumberColumn(format="$%.2f")},
-            )
-        else:
-            st.success("Nada pendiente en este lado.")
-
-    sugeridos = candidatos_auto(izq, der)
-    st.subheader("Sugerencias")
-    if not sugeridos:
-        st.markdown(
-            '<div class="empty">No hay coincidencias de monto en la ventana de fechas. Prueba otro cruce o concilia a mano.</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        for a, b, dias in sugeridos:
-            st.markdown(
-                f'<div class="match-ok"><strong>{dinero(a["monto"])}</strong> · '
-                f'{etiqueta(a, mod_izq)}<br/>↔ {etiqueta(b, mod_der)}'
-                f'<br/><span style="opacity:.75">Separadas {dias} día(s)</span></div>',
-                unsafe_allow_html=True,
-            )
-        if st.button(f"Aceptar {len(sugeridos)} coincidencia(s)", type="primary"):
-            for a, b, _ in sugeridos:
-                if not a["conciliado"] and not b["conciliado"]:
-                    aplicar_match(a, b)
-            st.success("Coincidencias conciliadas.")
-            st.rerun()
-
-    st.divider()
-    st.subheader("Conciliar a mano")
+def pagina_manual() -> None:
+    st.title("Conciliar a mano")
+    st.write("Cuando el automático no empata (nombres distintos, varias partidas), eliges un movimiento externo y un asiento de Odoo.")
+    cruce = st.selectbox("Cruce", list(CRUCES.keys()))
+    mod_ext, _, reglas = CRUCES[cruce]
+    ext = [r for r in _filtra(filas(mod_ext), mod_ext, reglas) if not r.get("conciliado")]
+    odoo = [r for r in _filtra(filas("odoo"), "odoo", reglas) if not r.get("conciliado")]
+    if not ext or not odoo:
+        st.info("No hay pendientes en este cruce. Ejecuta la conciliación o cambia de cruce.")
+        return
     c1, c2 = st.columns(2)
-    opciones_izq = [r for r in izq if not r["conciliado"]]
-    opciones_der = [r for r in der if not r["conciliado"]]
-    if not opciones_izq or not opciones_der:
-        st.caption("Necesitas al menos un pendiente de cada lado.")
-        return
-
-    sel_a = c1.selectbox(
-        mod_izq.capitalize(),
-        opciones_izq,
-        format_func=lambda r: etiqueta(r, mod_izq),
-        key="manual_a",
+    a = c1.selectbox(
+        "Externo",
+        ext,
+        format_func=lambda r: f"{r['fecha']} · ${r['monto']:,.2f} · {r.get('descripcion') or r.get('comercio') or r.get('proveedor')}",
     )
-    sel_b = c2.selectbox(
-        mod_der.capitalize(),
-        opciones_der,
-        format_func=lambda r: etiqueta(r, mod_der),
-        key="manual_b",
+    b = c2.selectbox(
+        "Odoo",
+        odoo,
+        format_func=lambda r: f"{r['folio']} · {r['partner']} · ${r['monto']:,.2f}",
     )
-    diff = abs(float(sel_a["monto"]) - float(sel_b["monto"]))
-    if diff > TOLERANCIA:
-        st.markdown(
-            f'<div class="match-warn">Los montos no coinciden: diferencia {dinero(diff)}. '
-            "Puedes forzar la conciliación si así lo decides.</div>",
-            unsafe_allow_html=True,
-        )
-    if st.button("Conciliar selección"):
-        aplicar_match(sel_a, sel_b)
-        st.success("Movimientos conciliados.")
-        st.rerun()
-
-    st.divider()
-    st.subheader("Deshacer un cruce")
-    ids = sorted(
-        {
-            r["match_id"]
-            for lista in st.session_state.listas.values()
-            for r in lista
-            if r.get("match_id")
-        }
-    )
-    if not ids:
-        st.caption("Aún no hay cruces confirmados.")
-        return
-    elegido = st.selectbox("match_id", ids)
-    if st.button("Deshacer"):
-        deshacer_match(elegido)
-        st.success(f"Se revirtió el cruce {elegido}.")
+    if st.button("Marcar como conciliados", type="primary"):
+        aplicar_match_manual(a, b)
+        st.session_state.corrida = False
+        st.success("Quedaron ligados en esta sesión. Ejecuta de nuevo la conciliación para refrescar excepciones.")
         st.rerun()
 
 
 def pagina_importar() -> None:
     st.title("Importar")
-    st.write("Sube un CSV o Excel (.xlsx) con las columnas de la plantilla. Las filas se agregan a las de ejemplo.")
-
-    modulo_nombre = st.selectbox(
-        "Destino",
-        ["Bancos", "Tarjetas", "Ventas", "Proveedores"],
+    st.write(
+        "Por ahora se cargan CSV o Excel. El siguiente paso será leer Odoo en vivo (facturas, pagos y gastos). "
+        "No subas archivos con datos reales a GitHub; solo aquí, en tu sesión."
     )
-    modulo = modulo_nombre.lower()
-    st.code(", ".join(COLUMNAS[modulo]), language=None)
-
-    st.download_button(
-        "Descargar plantilla",
-        data=plantilla_csv(modulo),
-        file_name=f"plantilla_{modulo}.csv",
-        mime="text/csv",
-    )
-
-    archivo = st.file_uploader("Archivo", type=["csv", "xlsx"], key="uploader")
+    destino = st.selectbox("Destino", ["Odoo", "Bancos", "Tarjetas", "Proveedores"])
+    modulo = destino.lower()
+    st.code(", ".join(COLUMNAS[modulo]))
+    plantilla = pd.DataFrame(columns=COLUMNAS[modulo]).to_csv(index=False).encode("utf-8")
+    st.download_button("Descargar plantilla", data=plantilla, file_name=f"plantilla_{modulo}.csv", mime="text/csv")
+    archivo = st.file_uploader("Archivo", type=["csv", "xlsx"])
     if archivo is None:
         st.markdown(
-            '<div class="empty">Aún no hay archivo. Descarga la plantilla, llénala y súbela aquí.</div>',
+            '<div class="empty">Descarga la plantilla, llénala (o exporta desde Odoo / el banco) y súbela.</div>',
             unsafe_allow_html=True,
         )
         return
-
     try:
-        crudo = leer_archivo(archivo)
-        listo = normalizar_import(crudo, modulo)
+        crudo = pd.read_excel(archivo) if archivo.name.lower().endswith(".xlsx") else pd.read_csv(archivo)
+        crudo.columns = [str(c).strip().lower() for c in crudo.columns]
+        faltan = [c for c in COLUMNAS[modulo] if c not in crudo.columns]
+        if faltan:
+            st.error(f"Faltan columnas: {', '.join(faltan)}")
+            return
+        crudo["monto"] = pd.to_numeric(crudo["monto"], errors="coerce")
+        crudo["fecha"] = pd.to_datetime(crudo["fecha"], errors="coerce")
+        if crudo["monto"].isna().any() or crudo["fecha"].isna().any():
+            st.error("Hay montos o fechas inválidas. Fechas en YYYY-MM-DD.")
+            return
+        crudo["fecha"] = crudo["fecha"].dt.strftime("%Y-%m-%d")
     except Exception as exc:
         st.error(str(exc))
         return
-
-    st.dataframe(listo, use_container_width=True, hide_index=True)
-    if st.button(f"Cargar {len(listo)} fila(s) a {modulo_nombre}", type="primary"):
-        st.session_state.listas[modulo].extend(filas_desde_df(listo, modulo))
-        st.success(f"Se cargaron {len(listo)} movimientos.")
+    st.dataframe(crudo[COLUMNAS[modulo]], use_container_width=True, hide_index=True)
+    if st.button(f"Cargar {len(crudo)} fila(s)", type="primary"):
+        for _, row in crudo.iterrows():
+            item = {
+                "id": f"{modulo[0]}-{uuid4().hex[:6]}",
+                "conciliado": False,
+                "match_id": None,
+            }
+            for col in COLUMNAS[modulo]:
+                item[col] = float(row[col]) if col == "monto" else str(row[col])
+            st.session_state.listas[modulo].append(item)
+        st.session_state.corrida = False
+        st.success("Cargado. Ejecuta la conciliación.")
         st.rerun()
 
 
@@ -696,34 +358,30 @@ def main() -> None:
     init_state()
     estilos()
     seccion = sidebar()
-    if seccion == "Panel":
-        pagina_panel()
-    elif seccion == "Bancos":
+    if seccion == "Hoy":
+        pagina_hoy()
+    elif seccion == "Odoo":
         pagina_modulo(
-            "Bancos",
-            "bancos",
-            "Estados de cuenta: abonos (entradas) y cargos (salidas).",
+            "Odoo",
+            "odoo",
+            "Ventas (clientes), compras (hoteles, aerolíneas, operadoras) y gastos. Esta es la base que debe quedar al día.",
         )
+    elif seccion == "Bancos":
+        pagina_modulo("Bancos", "bancos", "Estados de cuenta: abonos de clientes y cargos a proveedores o comisiones.")
     elif seccion == "Tarjetas":
         pagina_modulo(
             "Tarjetas",
             "tarjetas",
-            "Cargos de tarjetas corporativas o cobros con terminal.",
-        )
-    elif seccion == "Ventas":
-        pagina_modulo(
-            "Ventas",
-            "ventas",
-            "Facturas o notas de venta que deben aparecer en banco o tarjeta.",
+            "Tarjetas de la agencia asignadas a cada vendedor. Cada cargo debería existir como gasto o compra en Odoo.",
         )
     elif seccion == "Proveedores":
         pagina_modulo(
             "Proveedores",
             "proveedores",
-            "Facturas por pagar o ya pagadas que debes cruzar con la salida de dinero.",
+            "Lo que el hotel, la aerolínea o el transportista dice que nos facturó. Si no está en Odoo, falta el alta.",
         )
-    elif seccion == "Conciliar":
-        pagina_conciliar()
+    elif seccion == "Conciliar a mano":
+        pagina_manual()
     else:
         pagina_importar()
 
