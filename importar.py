@@ -29,6 +29,8 @@ ALIASES = {
         "cargo/abono",
         "total signed",
         "amount_total_signed",
+        "total de compra",
+        "total compra",
     ],
     "tipo": ["tipo", "type", "move_type", "move type", "invoice type", "tipo de movimiento", "tipo de documento"],
     "codigo": [
@@ -52,11 +54,21 @@ ALIASES = {
     "vendedor": ["vendedor", "seller", "empleado", "titular", "card holder"],
     "tarjeta": ["tarjeta", "card", "ultimos 4", "últimos 4", "mask"],
     "comercio": ["comercio", "merchant", "establecimiento", "descripcion", "descripción"],
-    "autorizacion": ["autorizacion", "autorización", "auth", "authorization", "codigo"],
+    "autorizacion": ["autorizacion", "autorización", "auth", "authorization"],
     "proveedor": ["proveedor", "vendor", "supplier", "empresa", "hotel"],
     "concepto": ["concepto", "descripcion", "descripción", "description", "detalle"],
-    "cargo": ["cargo", "cargos", "retiro", "debit", "debits", "withdrawals"],
-    "abono": ["abono", "abonos", "deposito", "depósito", "credit", "credits", "deposits"],
+    "cargo": ["cargo", "cargos", "retiro", "retiros", "debit", "debits", "withdrawals"],
+    "abono": [
+        "abono",
+        "abonos",
+        "deposito",
+        "depósito",
+        "depositos",
+        "depósitos",
+        "credit",
+        "credits",
+        "deposits",
+    ],
 }
 
 TIPO_ODOO = {
@@ -111,6 +123,56 @@ def _fechas(df: pd.DataFrame) -> pd.Series:
         malas = int(fechas.isna().sum())
         raise ValueError(f"Hay {malas} fecha(s) que no pude leer. Usa YYYY-MM-DD o DD/MM/YYYY.")
     return fechas.dt.strftime("%Y-%m-%d")
+
+
+def _num(valor) -> float | None:
+    n = pd.to_numeric(valor, errors="coerce")
+    if pd.isna(n):
+        return None
+    return abs(float(n))
+
+
+def _montos_odoo(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Ventas suelen venir en Total; compras en Total de compra. Si hay ambas, se usa la que tenga número."""
+    col_compra = None
+    for nombre in ("total de compra", "total compra", "importe de compra", "importe compra"):
+        if nombre in df.columns:
+            col_compra = nombre
+            break
+    col_venta = None
+    for nombre in ("total", "monto", "importe", "amount", "amount total", "amount_total"):
+        if nombre in df.columns:
+            col_venta = nombre
+            break
+    if col_venta is None and col_compra is None:
+        raise ValueError("No encontré columna Total ni Total de compra.")
+
+    montos = []
+    tipos = []
+    tipo_col = _col(df, "tipo")
+    for i in df.index:
+        venta = _num(df.at[i, col_venta]) if col_venta else None
+        compra = _num(df.at[i, col_compra]) if col_compra else None
+        tipo_dado = str(df.at[i, tipo_col]).strip() if tipo_col else ""
+        if compra and not venta:
+            montos.append(compra)
+            tipos.append(_tipo_odoo(tipo_dado) if tipo_dado else "compra")
+        elif venta and not compra:
+            montos.append(venta)
+            tipos.append(_tipo_odoo(tipo_dado) if tipo_dado else "venta")
+        elif venta and compra:
+            if tipo_dado:
+                t = _tipo_odoo(tipo_dado)
+                montos.append(compra if t in {"compra", "gasto"} else venta)
+                tipos.append(t)
+            else:
+                raise ValueError(
+                    f"Fila {i + 2}: hay valor en Total y en Total de compra. Deja uno vacío o pon la columna Tipo."
+                )
+        else:
+            montos.append(None)
+            tipos.append(_tipo_odoo(tipo_dado) if tipo_dado else "compra")
+    return pd.Series(tipos, index=df.index), pd.Series(montos, index=df.index)
 
 
 def _tipo_odoo(valor: str) -> str:
@@ -186,26 +248,23 @@ def normalizar(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
         )
         out = out.dropna(subset=["tipo", "monto"])
     elif modulo == "odoo":
-        col_m = _col(df, "monto")
-        if col_m is None:
-            raise ValueError("No encontré columna de monto/total.")
-        montos = pd.to_numeric(df[col_m], errors="coerce")
+        tipos, montos = _montos_odoo(df)
         out = pd.DataFrame(
             {
                 "fecha": fechas,
-                "tipo": _serie(df, "tipo", "compra").map(_tipo_odoo),
+                "tipo": tipos,
                 "folio": _serie(df, "folio", "S/F"),
                 "codigo": _serie(df, "codigo"),
                 "partner": _serie(df, "partner"),
                 "referencia": _serie(df, "referencia"),
                 "diario": _serie(df, "diario", "Odoo"),
-                "monto": montos.abs(),
+                "monto": montos,
             }
         )
         if out["partner"].eq("").any():
             raise ValueError("Hay filas de Odoo sin cliente/proveedor (partner).")
-        if montos.isna().any():
-            raise ValueError("Hay montos de Odoo que no son numéricos.")
+        if out["monto"].isna().any():
+            raise ValueError("Hay filas de Odoo sin Total ni Total de compra.")
         out["codigo"] = out["codigo"].where(out["codigo"].str.len() > 0, out["folio"])
     elif modulo == "tarjetas":
         col_m = _col(df, "monto")
