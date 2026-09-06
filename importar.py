@@ -132,6 +132,9 @@ def leer_tabla(archivo) -> pd.DataFrame:
             f"o CSV. Detalle: {ultimo}"
         )
     raise ValueError("No pude leer el archivo.")
+
+
+def _limpia_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     nombres = []
     for c in out.columns:
