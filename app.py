@@ -373,11 +373,14 @@ def pagina_importar() -> None:
             else pd.read_csv(archivo)
         )
         listo = normalizar(crudo, modulo)
+        omitidas = int(listo.attrs.get("omitidas") or 0)
     except Exception as exc:
         st.error(str(exc))
-        st.caption("Si falla por columnas, abre el Excel y dime los nombres de la fila 1.")
+        st.caption("Si falla por columnas, abre el Excel y dime exactamente los nombres de la fila 1.")
         return
     st.success(f"Leí {len(listo)} fila(s). Revisa la vista previa.")
+    if omitidas:
+        st.warning(f"Omití {omitidas} fila(s) sin fecha, empresa o importe (títulos, totales o vacías).")
     st.dataframe(
         listo,
         use_container_width=True,

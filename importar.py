@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
+
 import pandas as pd
 
 ALIASES = {
@@ -45,7 +48,19 @@ ALIASES = {
         "codigo conciliacion",
         "código conciliación",
     ],
-    "partner": ["partner", "cliente", "proveedor", "empresa", "contacto", "contact", "partner_id"],
+    "partner": [
+        "partner",
+        "cliente",
+        "proveedor",
+        "empresa",
+        "contacto",
+        "contact",
+        "partner_id",
+        "nombre",
+        "cliente/proveedor",
+        "customer",
+        "vendor",
+    ],
     "referencia": ["referencia", "ref", "concepto", "communication", "payment_reference", "memo"],
     "diario": ["diario", "journal", "journal_id"],
     "cuenta": ["cuenta", "account", "clabe", "product"],
@@ -93,8 +108,13 @@ TIPO_ODOO = {
 
 def _limpia_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    out.columns = [" ".join(str(c).strip().lower().split()) for c in out.columns]
-    return out
+    nombres = []
+    for c in out.columns:
+        t = unicodedata.normalize("NFKC", str(c)).replace("\xa0", " ").strip().lower()
+        t = " ".join(t.split())
+        nombres.append(t)
+    out.columns = nombres
+    return out.dropna(how="all")
 
 
 def _col(df: pd.DataFrame, clave: str) -> str | None:
@@ -119,16 +139,30 @@ def _fechas(df: pd.DataFrame) -> pd.Series:
     if fechas.isna().any():
         fechas2 = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
         fechas = fechas.fillna(fechas2)
-    if fechas.isna().any():
-        malas = int(fechas.isna().sum())
-        raise ValueError(f"Hay {malas} fecha(s) que no pude leer. Usa YYYY-MM-DD o DD/MM/YYYY.")
-    return fechas.dt.strftime("%Y-%m-%d")
+    if fechas.isna().all():
+        raise ValueError("No pude leer ninguna fecha. Usa YYYY-MM-DD o DD/MM/YYYY.")
+    return fechas
 
 
 def _num(valor) -> float | None:
-    if valor is None or (isinstance(valor, str) and not str(valor).strip()):
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return None
-    n = pd.to_numeric(valor, errors="coerce")
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        if abs(float(valor)) < 0.005:
+            return None
+        return abs(float(valor))
+    s = str(valor).strip()
+    if not s or s.lower() in {"nan", "none", "nat", "-", "—", "n/a"}:
+        return None
+    s = s.replace("$", "").replace("mxn", "").replace("€", "")
+    s = s.replace("\xa0", "").replace(" ", "")
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+(,\d+)?", s):
+        s = s.replace(".", "").replace(",", ".")
+    elif s.count(",") == 1 and s.count(".") == 0:
+        s = s.replace(",", ".")
+    else:
+        s = s.replace(",", "")
+    n = pd.to_numeric(s, errors="coerce")
     if pd.isna(n) or abs(float(n)) < 0.005:
         return None
     return abs(float(n))
@@ -145,18 +179,29 @@ def _infer_tipo_odoo(tipo_dado: str, folio: str, codigo: str) -> str | None:
     return None
 
 
+def _busca_col(df: pd.DataFrame, incluir: tuple[str, ...], excluir: tuple[str, ...] = ()) -> str | None:
+    for c in df.columns:
+        if any(x in c for x in excluir):
+            continue
+        if all(p in c for p in incluir):
+            return c
+    return None
+
+
 def _montos_odoo(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     """Ventas en Total; compras en Total de compra. El 0 se ignora; si ambas tienen cifra, se elige por tipo o folio."""
-    col_compra = None
-    for nombre in ("total de compra", "total compra", "importe de compra", "importe compra"):
-        if nombre in df.columns:
-            col_compra = nombre
-            break
+    col_compra = _busca_col(df, ("total", "compra")) or _busca_col(df, ("importe", "compra"))
     col_venta = None
     for nombre in ("total", "monto", "importe", "amount", "amount total", "amount_total"):
         if nombre in df.columns:
             col_venta = nombre
             break
+    if col_venta is None:
+        col_venta = _busca_col(
+            df,
+            ("total",),
+            ("compra", "impuesto", "tax", "untaxed", "sin impuesto"),
+        )
     if col_venta is None and col_compra is None:
         raise ValueError("No encontré columna Total ni Total de compra.")
 
@@ -270,6 +315,8 @@ def normalizar(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
             }
         )
         out = out.dropna(subset=["tipo", "monto"])
+        out = out[out["fecha"].notna()].copy()
+        out["fecha"] = pd.to_datetime(out["fecha"]).dt.strftime("%Y-%m-%d")
     elif modulo == "odoo":
         tipos, montos = _montos_odoo(df)
         out = pd.DataFrame(
@@ -284,11 +331,20 @@ def normalizar(df: pd.DataFrame, modulo: str) -> pd.DataFrame:
                 "monto": montos,
             }
         )
-        if out["partner"].eq("").any():
-            raise ValueError("Hay filas de Odoo sin cliente/proveedor (partner).")
-        if out["monto"].isna().any():
-            raise ValueError("Hay filas de Odoo sin Total ni Total de compra.")
-        out["codigo"] = out["codigo"].where(out["codigo"].str.len() > 0, out["folio"])
+        n0 = len(out)
+        out = out[out["monto"].notna()]
+        out = out[out["fecha"].notna()]
+        out = out[out["partner"].astype(str).str.strip().ne("")]
+        omitidas = n0 - len(out)
+        if out.empty:
+            raise ValueError(
+                "Ninguna fila de Odoo tuvo fecha, empresa e importe. "
+                f"Columnas que vi: {', '.join(df.columns)}"
+            )
+        out = out.copy()
+        out["fecha"] = pd.to_datetime(out["fecha"]).dt.strftime("%Y-%m-%d")
+        out["codigo"] = out["codigo"].where(out["codigo"].astype(str).str.len() > 0, out["folio"])
+        out.attrs["omitidas"] = int(omitidas)
     elif modulo == "tarjetas":
         col_m = _col(df, "monto")
         if col_m is None:
