@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from io import BytesIO, StringIO
 
 import pandas as pd
 
@@ -106,32 +107,115 @@ TIPO_ODOO = {
 }
 
 
-def leer_tabla(archivo) -> pd.DataFrame:
-    """Lee Excel o CSV. Los bancos en México suelen ir en Windows-1252 (ñ, acentos)."""
-    nombre = str(getattr(archivo, "name", "") or "").lower()
-    if nombre.endswith((".xlsx", ".xls", ".xlsm")):
-        archivo.seek(0)
-        return pd.read_excel(archivo)
-    encodings = ("utf-8-sig", "utf-8", "cp1252", "latin-1", "iso-8859-1")
-    seps = (",", ";", "\t")
-    ultimo = None
-    for enc in encodings:
-        for sep in seps:
+def _raw_bytes(archivo) -> bytes:
+    if hasattr(archivo, "getvalue"):
+        data = archivo.getvalue()
+    else:
+        if hasattr(archivo, "seek"):
+            archivo.seek(0)
+        data = archivo.read()
+        if hasattr(archivo, "seek"):
+            archivo.seek(0)
+    if isinstance(data, str):
+        return data.encode("utf-8")
+    return bytes(data or b"")
+
+
+def _decodifica(raw: bytes) -> str:
+    """UTF-8 primero; si hay ñ/acentos de Windows, usa cp1252. latin-1 nunca falla."""
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1")
+
+
+def _parece_html(raw: bytes) -> bool:
+    cabeza = raw.lstrip()[:4096].lower()
+    return cabeza.startswith(b"<html") or cabeza.startswith(b"<!doctype") or b"<table" in cabeza
+
+
+def _tiene_encabezado(df: pd.DataFrame) -> bool:
+    cols = " ".join(unicodedata.normalize("NFKC", str(c)).lower() for c in df.columns)
+    claves = (
+        "fecha",
+        "date",
+        "deposito",
+        "depósito",
+        "retiro",
+        "cargo",
+        "abono",
+        "monto",
+        "total",
+        "importe",
+        "descripcion",
+        "descripción",
+        "concepto",
+        "partner",
+        "cliente",
+        "proveedor",
+    )
+    return any(k in cols for k in claves)
+
+
+def _lee_html(raw: bytes) -> pd.DataFrame | None:
+    try:
+        tablas = pd.read_html(StringIO(_decodifica(raw)))
+    except Exception:
+        return None
+    if not tablas:
+        return None
+    return max(tablas, key=lambda t: int(t.shape[0]) * int(t.shape[1]))
+
+
+def _lee_csv(raw: bytes) -> pd.DataFrame:
+    texto = _decodifica(raw)
+    mejor = None
+    mejor_score = -1
+    for skip in range(0, 12):
+        for sep in (",", ";", "\t", "|"):
             try:
-                archivo.seek(0)
-                df = pd.read_csv(archivo, encoding=enc, sep=sep, engine="python")
-                if df.shape[1] <= 1 and sep != seps[-1]:
-                    continue
-                return df
-            except Exception as exc:
-                ultimo = exc
+                df = pd.read_csv(StringIO(texto), sep=sep, engine="python", skiprows=skip)
+            except Exception:
                 continue
-    if ultimo:
+            if df.shape[1] < 2:
+                continue
+            score = int(df.shape[1])
+            if _tiene_encabezado(df):
+                score += 50
+            if score > mejor_score:
+                mejor, mejor_score = df, score
+        if mejor is not None and mejor_score >= 53:
+            break
+    if mejor is None:
         raise ValueError(
-            "No pude leer el archivo del banco. Prueba guardarlo como Excel (.xlsx) "
-            f"o CSV. Detalle: {ultimo}"
+            "No pude leer el CSV. En Excel: Archivo → Guardar como → Libro de Excel (.xlsx) y súbelo así."
         )
-    raise ValueError("No pude leer el archivo.")
+    return mejor
+
+
+def leer_tabla(archivo) -> pd.DataFrame:
+    """Lee Excel, CSV Windows-1252 (ñ) o .xls que en realidad es CSV/HTML de banco."""
+    raw = _raw_bytes(archivo)
+    if not raw.strip():
+        raise ValueError("El archivo está vacío.")
+
+    if raw[:2] == b"PK":
+        return pd.read_excel(BytesIO(raw), engine="openpyxl")
+
+    if raw[:4] == b"\xd0\xcf\x11\xe0":
+        try:
+            return pd.read_excel(BytesIO(raw))
+        except Exception:
+            pass
+
+    if _parece_html(raw):
+        html = _lee_html(raw)
+        if html is not None and html.shape[1] >= 2:
+            return html
+
+    return _lee_csv(raw)
 
 
 def _limpia_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -292,10 +376,8 @@ def _bancos_monto_tipo(df: pd.DataFrame) -> pd.DataFrame:
     filas = []
     for i in df.index:
         if cargo_c and abono_c:
-            cargo = pd.to_numeric(df.at[i, cargo_c], errors="coerce")
-            abono = pd.to_numeric(df.at[i, abono_c], errors="coerce")
-            cargo = 0.0 if pd.isna(cargo) else abs(float(cargo))
-            abono = 0.0 if pd.isna(abono) else abs(float(abono))
+            cargo = _num(df.at[i, cargo_c]) or 0.0
+            abono = _num(df.at[i, abono_c]) or 0.0
             if cargo > 0 and abono == 0:
                 filas.append(("cargo", cargo))
             elif abono > 0 and cargo == 0:
@@ -307,11 +389,14 @@ def _bancos_monto_tipo(df: pd.DataFrame) -> pd.DataFrame:
             continue
         if monto_c is None:
             raise ValueError("Necesito 'monto' o un par 'cargo' y 'abono'.")
-        monto = pd.to_numeric(df.at[i, monto_c], errors="coerce")
-        if pd.isna(monto):
-            filas.append((None, None))
-            continue
-        monto = float(monto)
+        signed = pd.to_numeric(df.at[i, monto_c], errors="coerce")
+        if pd.isna(signed):
+            parsed = _num(df.at[i, monto_c])
+            if parsed is None:
+                filas.append((None, None))
+                continue
+            signed = parsed
+        monto = float(signed)
         tipo = str(df.at[i, tipo_c]).strip().lower() if tipo_c else ""
         if tipo in {"cargo", "retiro", "debit"}:
             filas.append(("cargo", abs(monto)))

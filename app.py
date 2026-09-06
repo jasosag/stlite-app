@@ -367,16 +367,20 @@ def pagina_importar() -> None:
             st.rerun()
         return
     try:
-        crudo = (
-            pd.read_excel(archivo)
-            if archivo.name.lower().endswith((".xlsx", ".xls"))
-            else pd.read_csv(archivo)
-        )
+        crudo = leer_tabla(archivo)
         listo = normalizar(crudo, modulo)
         omitidas = int(listo.attrs.get("omitidas") or 0)
     except Exception as exc:
-        st.error(str(exc))
-        st.caption("Si falla por columnas, abre el Excel y dime exactamente los nombres de la fila 1.")
+        texto = str(exc)
+        if "codec" in texto.lower() or "decode" in texto.lower():
+            st.error(
+                "El CSV está en Windows (letra ñ), no en UTF-8. "
+                "Ya lo leo así: en Streamlit Cloud pulsa **Reboot** y vuelve a subir el mismo archivo. "
+                "Si no puedes esperar: Excel → Guardar como → Libro de Excel (.xlsx)."
+            )
+        else:
+            st.error(texto)
+        st.caption("Si falla por columnas, abre el archivo y dime exactamente los nombres de la fila 1.")
         return
     st.success(f"Leí {len(listo)} fila(s). Revisa la vista previa.")
     if omitidas:

@@ -96,7 +96,7 @@ Streamlit Cloud instala lo de `requirements.txt`. No uses `iniciar.sh` ahí: ese
 - **Hoy** — excepciones del día: falta en Odoo, duplicados, diferencia de monto
 - **Odoo / Bancos / Tarjetas / Proveedores** — cada fuente
 - **Conciliar a mano** — cuando el automático no empata
-- **Importar** — CSV o Excel (plantillas incluidas)
+- **Importar** — CSV o Excel (plantillas incluidas). Los CSV de banco en Windows (letra **ñ**) se leen solos; si uno falla, en Excel: Guardar como → `.xlsx`.
 
 ## Archivos
 
