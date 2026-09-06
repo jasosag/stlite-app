@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from datos import muestra_inicial
-from importar import normalizar
+from importar import leer_tabla, normalizar
 from motor import CRUCES, DIAS_VENTANA, _filtra, aplicar_match_manual, conciliar
 
 st.set_page_config(

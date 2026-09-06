@@ -106,7 +106,32 @@ TIPO_ODOO = {
 }
 
 
-def _limpia_cols(df: pd.DataFrame) -> pd.DataFrame:
+def leer_tabla(archivo) -> pd.DataFrame:
+    """Lee Excel o CSV. Los bancos en México suelen ir en Windows-1252 (ñ, acentos)."""
+    nombre = str(getattr(archivo, "name", "") or "").lower()
+    if nombre.endswith((".xlsx", ".xls", ".xlsm")):
+        archivo.seek(0)
+        return pd.read_excel(archivo)
+    encodings = ("utf-8-sig", "utf-8", "cp1252", "latin-1", "iso-8859-1")
+    seps = (",", ";", "\t")
+    ultimo = None
+    for enc in encodings:
+        for sep in seps:
+            try:
+                archivo.seek(0)
+                df = pd.read_csv(archivo, encoding=enc, sep=sep, engine="python")
+                if df.shape[1] <= 1 and sep != seps[-1]:
+                    continue
+                return df
+            except Exception as exc:
+                ultimo = exc
+                continue
+    if ultimo:
+        raise ValueError(
+            "No pude leer el archivo del banco. Prueba guardarlo como Excel (.xlsx) "
+            f"o CSV. Detalle: {ultimo}"
+        )
+    raise ValueError("No pude leer el archivo.")
     out = df.copy()
     nombres = []
     for c in out.columns:
