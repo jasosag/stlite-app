@@ -126,14 +126,27 @@ def _fechas(df: pd.DataFrame) -> pd.Series:
 
 
 def _num(valor) -> float | None:
+    if valor is None or (isinstance(valor, str) and not str(valor).strip()):
+        return None
     n = pd.to_numeric(valor, errors="coerce")
-    if pd.isna(n):
+    if pd.isna(n) or abs(float(n)) < 0.005:
         return None
     return abs(float(n))
 
 
+def _infer_tipo_odoo(tipo_dado: str, folio: str, codigo: str) -> str | None:
+    if tipo_dado and tipo_dado.lower() not in {"nan", "none", "nat"}:
+        return _tipo_odoo(tipo_dado)
+    blob = f"{folio} {codigo}".lower()
+    if any(x in blob for x in ("inv/", "out_invoice", "venta", "fv-", "customer")):
+        return "venta"
+    if any(x in blob for x in ("bill/", "in_invoice", "compra", "exp/", "vendor", "fc-")):
+        return "compra"
+    return None
+
+
 def _montos_odoo(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """Ventas suelen venir en Total; compras en Total de compra. Si hay ambas, se usa la que tenga número."""
+    """Ventas en Total; compras en Total de compra. El 0 se ignora; si ambas tienen cifra, se elige por tipo o folio."""
     col_compra = None
     for nombre in ("total de compra", "total compra", "importe de compra", "importe compra"):
         if nombre in df.columns:
@@ -150,28 +163,38 @@ def _montos_odoo(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     montos = []
     tipos = []
     tipo_col = _col(df, "tipo")
+    folio_col = _col(df, "folio")
+    codigo_col = _col(df, "codigo")
     for i in df.index:
         venta = _num(df.at[i, col_venta]) if col_venta else None
         compra = _num(df.at[i, col_compra]) if col_compra else None
         tipo_dado = str(df.at[i, tipo_col]).strip() if tipo_col else ""
+        folio = str(df.at[i, folio_col]).strip() if folio_col else ""
+        codigo = str(df.at[i, codigo_col]).strip() if codigo_col else ""
+        t = _infer_tipo_odoo(tipo_dado, folio, codigo)
+
         if compra and not venta:
             montos.append(compra)
-            tipos.append(_tipo_odoo(tipo_dado) if tipo_dado else "compra")
+            tipos.append(t or "compra")
         elif venta and not compra:
             montos.append(venta)
-            tipos.append(_tipo_odoo(tipo_dado) if tipo_dado else "venta")
+            tipos.append(t or "venta")
         elif venta and compra:
-            if tipo_dado:
-                t = _tipo_odoo(tipo_dado)
-                montos.append(compra if t in {"compra", "gasto"} else venta)
+            if t in {"compra", "gasto"}:
+                montos.append(compra)
                 tipos.append(t)
+            elif t == "venta":
+                montos.append(venta)
+                tipos.append("venta")
+            elif abs(venta - compra) <= 0.05:
+                montos.append(venta)
+                tipos.append("venta")
             else:
-                raise ValueError(
-                    f"Fila {i + 2}: hay valor en Total y en Total de compra. Deja uno vacío o pon la columna Tipo."
-                )
+                montos.append(compra)
+                tipos.append("compra")
         else:
             montos.append(None)
-            tipos.append(_tipo_odoo(tipo_dado) if tipo_dado else "compra")
+            tipos.append(t or "compra")
     return pd.Series(tipos, index=df.index), pd.Series(montos, index=df.index)
 
 
